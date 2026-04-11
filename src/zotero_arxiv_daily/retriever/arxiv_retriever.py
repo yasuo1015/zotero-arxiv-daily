@@ -9,6 +9,7 @@ from tqdm import tqdm
 import multiprocessing
 import os
 from queue import Empty
+from time import sleep
 from typing import Any, Callable, TypeVar
 from loguru import logger
 import requests
@@ -116,6 +117,10 @@ class ArxivRetriever(BaseRetriever):
         client = arxiv.Client(num_retries=10, delay_seconds=10)
         query = '+'.join(self.config.source.arxiv.category)
         include_cross_list = self.config.source.arxiv.get("include_cross_list", False)
+        batch_size = int(self.config.source.arxiv.get("id_list_batch_size", 5))
+        request_delay_seconds = float(self.config.source.arxiv.get("request_delay_seconds", 3.0))
+        if batch_size < 1:
+            raise ValueError("source.arxiv.id_list_batch_size must be at least 1.")
         # Get the latest paper from arxiv rss feed
         feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")
         if 'Feed error for query' in feed.feed.title:
@@ -132,11 +137,18 @@ class ArxivRetriever(BaseRetriever):
 
         # Get full information of each paper from arxiv api
         bar = tqdm(total=len(all_paper_ids))
-        for i in range(0, len(all_paper_ids), 20):
-            search = arxiv.Search(id_list=all_paper_ids[i:i + 20])
+        logger.info(
+            f"Resolving arXiv metadata with id_list_batch_size={batch_size}, "
+            f"request_delay_seconds={request_delay_seconds}"
+        )
+        for i in range(0, len(all_paper_ids), batch_size):
+            batch_ids = all_paper_ids[i:i + batch_size]
+            search = arxiv.Search(id_list=batch_ids)
             batch = list(client.results(search))
             bar.update(len(batch))
             raw_papers.extend(batch)
+            if i + batch_size < len(all_paper_ids):
+                sleep(request_delay_seconds)
         bar.close()
 
         return raw_papers
